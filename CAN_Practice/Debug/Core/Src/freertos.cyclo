@@ -1,0 +1,9 @@
+../Core/Src/freertos.c:151:6:MX_FREERTOS_Init	1
+../Core/Src/freertos.c:219:6:StartDefaultTask	5
+../Core/Src/freertos.c:275:6:StartTask02	1
+../Core/Src/freertos.c:299:6:StartTask03	1
+../Core/Src/freertos.c:323:6:StartTask04	1
+../Core/Src/freertos.c:347:6:StartTask05	1
+../Core/Src/freertos.c:365:6:TrashForwardTimerCallback	1
+../Core/Src/freertos.c:377:6:TrashBackwardTimerCallback	1
+../Core/Src/freertos.c:389:6:CheckTimerCallback	1

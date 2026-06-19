@@ -1,0 +1,6 @@
+../Core/Src/main.c:61:6:StepMotor_Write	1
+../Core/Src/main.c:69:6:StepMotor_Off	1
+../Core/Src/main.c:74:6:StepMotor_Step	9
+../Core/Src/main.c:117:5:main	1
+../Core/Src/main.c:172:6:SystemClock_Config	4
+../Core/Src/main.c:230:6:Error_Handler	1

@@ -1,0 +1,10 @@
+../Core/Src/freertos.c:140:6:MX_FREERTOS_Init	8	static
+../Core/Src/freertos.c:211:6:StartDefaultTask	16	static
+../Core/Src/freertos.c:230:6:StartTask02	16	static
+../Core/Src/freertos.c:319:6:StartTask03	16	static
+../Core/Src/freertos.c:338:6:StartTask04	16	static
+../Core/Src/freertos.c:357:6:StartTask05	16	static
+../Core/Src/freertos.c:370:6:TrashForwardTimerCallback	16	static
+../Core/Src/freertos.c:378:6:TrashBackwardTimerCallback	16	static
+../Core/Src/freertos.c:386:6:CheckTimerCallback	16	static
+../Core/Src/freertos.c:396:6:StepMotor_Write	24	static
