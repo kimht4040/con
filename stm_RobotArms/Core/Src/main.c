@@ -94,15 +94,11 @@ int main(void) {
 	MX_USART2_UART_Init();
 	MX_CAN1_Init();
 	/* USER CODE BEGIN 2 */
-	HAL_TIM_PWM_Start(&htim2, TIM_CHANNEL_1); // 팔
-	HAL_TIM_PWM_Start(&htim2, TIM_CHANNEL_2); // 그리퍼
-
-	/* --- CAN 필터 설정: 0x125만 통과 --- */
 	CAN_FilterTypeDef sFilterConfig;
 	sFilterConfig.FilterBank = 0;
 	sFilterConfig.FilterMode = CAN_FILTERMODE_IDMASK;
 	sFilterConfig.FilterScale = CAN_FILTERSCALE_32BIT;
-	sFilterConfig.FilterIdHigh = (0x125 << 5);   // 표준 ID는 상위 11비트라 << 5
+	sFilterConfig.FilterIdHigh = (0x123 << 5);   // 표준 ID는 상위 11비트라 << 5
 	sFilterConfig.FilterIdLow = 0x0000;
 	sFilterConfig.FilterMaskIdHigh = (0x7FF << 5); // 마스크: ID 11비트 전부 일치 검사
 	sFilterConfig.FilterMaskIdLow = 0x0000;
@@ -201,7 +197,7 @@ void HAL_CAN_RxFifo0MsgPendingCallback(CAN_HandleTypeDef *hcan) {
 
 	if (HAL_CAN_GetRxMessage(hcan, CAN_RX_FIFO0, &RxHeader, RxData) == HAL_OK) {
 		/* 필터로 이미 0x124만 통과했지만, 안전하게 한 번 더 확인 가능 */
-		if (RxHeader.StdId == 0x125) {
+		if (RxHeader.StdId == 0x123) {
 			/* ISR에서는 FromISR 버전으로 세마포어 give */
 			osSemaphoreRelease(canSemaphoreHandle);
 		}

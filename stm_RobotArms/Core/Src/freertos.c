@@ -152,14 +152,24 @@ void motorTask01(void *argument) {
 	const uint16_t GRIP_OPEN = 1500; // 그리퍼 열림(가정값)
 	const uint16_t GRIP_CLOSE = 500;  // 그리퍼 닫힘/잡기(가정값)
 
+	/* ── PWM 출력 시작 (태스크 안에서 직접 켜기) ── */
+	HAL_TIM_PWM_Start(&htim2, TIM_CHANNEL_1);
+	HAL_TIM_PWM_Start(&htim2, TIM_CHANNEL_2);
+
 	/* 시작 자세: 팔 90도, 그리퍼 열림 */
 	Servo_SetAngle(TIM_CHANNEL_1, ARM_90);
 	Servo_SetAngle(TIM_CHANNEL_2, GRIP_OPEN);
 	osDelay(500);
 
 	for (;;) {
+
 		/* 0x124 신호(세마포어) 올 때까지 대기 — 안 오면 여기서 블로킹 */
 		if (osSemaphoreAcquire(canSemaphoreHandle, osWaitForever) == osOK) {
+			HAL_GPIO_WritePin(LD2_GPIO_Port, LD2_Pin, GPIO_PIN_SET);
+			osDelay(100);
+			HAL_GPIO_WritePin(LD2_GPIO_Port, LD2_Pin, GPIO_PIN_RESET);
+			osDelay(100);
+
 			/* 1. 팔 0도로 이동 */
 			Servo_SetAngle(TIM_CHANNEL_1, ARM_0);
 			osDelay(600);                 // 이동 완료까지 대기
@@ -168,6 +178,7 @@ void motorTask01(void *argument) {
 			Servo_SetAngle(TIM_CHANNEL_2, GRIP_CLOSE);
 			osDelay(500);
 			CAN_Send(0x124, 0x01);   // 1번 벨트 작동 신호
+			CAN_Send(0x126, 0x01);   // 1번 벨트 작동 신호
 
 			/* 3. 팔 180도로 이동 */
 			Servo_SetAngle(TIM_CHANNEL_1, ARM_180);
