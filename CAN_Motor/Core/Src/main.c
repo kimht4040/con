@@ -16,11 +16,11 @@
   ******************************************************************************
   */
 /* USER CODE END Header */
-
 /* Includes ------------------------------------------------------------------*/
 #include "main.h"
 #include "cmsis_os.h"
 #include "can.h"
+#include "tim.h"
 #include "usart.h"
 #include "gpio.h"
 
@@ -37,9 +37,23 @@
 /* Private define ------------------------------------------------------------*/
 /* USER CODE BEGIN PD */
 
-#define CAN_CONTROL_ID          0x124
-#define CAN_DATA_STOP_MOTOR_A   0xAA
-#define CAN_DATA_RUN_MOTOR_B    0xAC
+/*
+ * CAN ID 정의
+ */
+#define CAN_CONTROL_ID              0x124
+#define CAN_RESUME_CONVEYOR_ID      0x01
+#define CAN_START_MOTOR_B_ID        0x02
+
+/*
+ * 새로 송신할 CAN ID
+ */
+#define CAN_RESPONSE_ID             0x126
+
+/*
+ * CAN ID 0x124 안에서 사용하는 데이터 정의
+ */
+#define CAN_DATA_STOP_CONVEYOR      0xAA
+#define CAN_DATA_RUN_MOTOR_A        0xAC
 
 /* USER CODE END PD */
 
@@ -56,32 +70,55 @@ CAN_RxHeaderTypeDef RxHeader;
 uint8_t RxData[8];
 
 /*
- * 0xAA가 마지막으로 들어온 시간.
- * freertos.c의 기존 모터 Task에서 이 값을 보고,
- * 최근에 0xAA가 들어왔으면 정지하고,
- * 일정 시간 동안 안 들어왔으면 다시 회전한다.
+ * 기존 컨베이어 DC모터 정지 상태 플래그
+ *
+ * 0: 기존 컨베이어 DC모터 회전
+ * 1: 기존 컨베이어 DC모터 정지
+ *
+ * CAN ID 0x124, Data[0] = 0xAA 수신 시 1
+ * RxData[0] = 0x01 수신 시 0
  */
-volatile uint32_t g_lastAA_Tick = 0;
+volatile uint8_t g_conveyor_Stop = 0;
 
 /*
- * 추가 모터 동작 요청 플래그.
- * 0xAC가 들어오면 1이 되고,
- * MotorCTask에서 이 값을 보고 추가 모터를 움직인다.
+ * 모터A 동작 요청 플래그
+ *
+ * PA8, PB10, PB4, PB5에 연결된 스텝모터이다.
+ *
+ * CAN ID 0x124, Data[0] = 0xAC 수신 시 1
  */
-volatile uint8_t g_motorB_Command = 0;
+volatile uint8_t g_motorA_Command = 0;
 
 /*
- * 추가 모터가 현재 동작 중인지 표시.
+ * 모터A가 현재 동작 중인지 표시
+ *
  * 동작 중일 때 0xAC가 다시 들어와도 무시하기 위해 사용한다.
  */
-volatile uint8_t g_motorB_Busy = 0;
+volatile uint8_t g_motorA_Busy = 0;
+
+/*
+ * 추가 모터B 계속 회전 플래그
+ *
+ * 0: 정지
+ * 1: 계속 회전
+ *
+ * RxData[0] = 0x02 수신 시 1
+ */
+volatile uint8_t g_motorB_Run = 0;
+
+/*
+ * CAN ID 0x126 송신 요청 플래그
+ *
+ * RxData[0] = 0x01 수신 시 1로 만든다.
+ * 실제 CAN 송신은 freertos.c의 StartDefaultTask에서 처리한다.
+ */
+volatile uint8_t g_send_126_Request = 0;
 
 /* USER CODE END PV */
 
 /* Private function prototypes -----------------------------------------------*/
 void SystemClock_Config(void);
 void MX_FREERTOS_Init(void);
-
 /* USER CODE BEGIN PFP */
 
 void CAN_Filter_Config(void);
@@ -100,12 +137,15 @@ void CAN_Filter_Config(void)
     canFilter.FilterScale = CAN_FILTERSCALE_32BIT;
 
     /*
-     * Standard ID 0x124만 통과시키는 필터
+     * 현재 코드는 CAN ID 0x124만 통과시킨다.
+     *
+     * CAN ID 0x124 안의 RxData[0] 값으로
+     * 0xAA, 0xAC, 0x01, 0x02 상황을 구분한다.
      */
-    canFilter.FilterIdHigh = CAN_CONTROL_ID << 5;
+    canFilter.FilterIdHigh = (CAN_CONTROL_ID << 5);
     canFilter.FilterIdLow = 0x0000;
 
-    canFilter.FilterMaskIdHigh = 0x7FF << 5;
+    canFilter.FilterMaskIdHigh = (0x7FF << 5);
     canFilter.FilterMaskIdLow = 0x0000;
 
     canFilter.FilterFIFOAssignment = CAN_RX_FIFO0;
@@ -124,33 +164,48 @@ void HAL_CAN_RxFifo0MsgPendingCallback(CAN_HandleTypeDef *hcan)
     {
         if (HAL_CAN_GetRxMessage(hcan, CAN_RX_FIFO0, &RxHeader, RxData) == HAL_OK)
         {
+            /*
+             * CAN ID 0x124 수신
+             *
+             * Data[0] = 0xAA
+             * → 기존 컨베이어 DC모터 정지
+             *
+             * Data[0] = 0xAC
+             * → 모터A 동작
+             *
+             * Data[0] = 0x01
+             * → 기존 컨베이어 DC모터 재가동
+             * → CAN ID 0x126 송신 요청
+             *
+             * Data[0] = 0x02
+             * → 모터B 계속 회전 시작
+             */
             if (RxHeader.StdId == CAN_CONTROL_ID)
             {
-                /*
-                 * Data[0] == 0xAA
-                 * 기존 모터 정지 신호
-                 *
-                 * 여기서는 영구 정지가 아니라,
-                 * 마지막으로 0xAA가 들어온 시간을 갱신한다.
-                 * freertos.c 쪽에서 최근에 0xAA가 들어왔는지 판단한다.
-                 */
-                if (RxData[0] == CAN_DATA_STOP_MOTOR_A)
+                if (RxData[0] == CAN_DATA_STOP_CONVEYOR)
                 {
-                    g_lastAA_Tick = HAL_GetTick();
+                    g_conveyor_Stop = 1;
                 }
-
-                /*
-                 * Data[0] == 0xAC
-                 * 추가 모터 동작 신호
-                 *
-                 * 추가 모터가 이미 동작 중이면 무시한다.
-                 */
-                else if (RxData[0] == CAN_DATA_RUN_MOTOR_B)
+                else if (RxData[0] == CAN_DATA_RUN_MOTOR_A)
                 {
-                    if ((g_motorB_Busy == 0) && (g_motorB_Command == 0))
+                    if ((g_motorA_Busy == 0) && (g_motorA_Command == 0))
                     {
-                        g_motorB_Command = 1;
+                        g_motorA_Command = 1;
                     }
+                }
+                else if (RxData[0] == CAN_RESUME_CONVEYOR_ID)
+                {
+                    g_conveyor_Stop = 0;
+
+                    /*
+                     * 실제 CAN 송신은 콜백 안에서 바로 하지 않고,
+                     * freertos.c의 StartDefaultTask에서 처리한다.
+                     */
+                    g_send_126_Request = 1;
+                }
+                else if (RxData[0] == CAN_START_MOTOR_B_ID)
+                {
+                    g_motorB_Run = 1;
                 }
             }
         }
@@ -172,22 +227,25 @@ int main(void)
 
   /* MCU Configuration--------------------------------------------------------*/
 
+  /* Reset of all peripherals, Initializes the Flash interface and the Systick. */
   HAL_Init();
 
   /* USER CODE BEGIN Init */
 
   /* USER CODE END Init */
 
+  /* Configure the system clock */
   SystemClock_Config();
 
   /* USER CODE BEGIN SysInit */
 
   /* USER CODE END SysInit */
 
+  /* Initialize all configured peripherals */
   MX_GPIO_Init();
   MX_USART2_UART_Init();
   MX_CAN1_Init();
-
+  MX_TIM2_Init();
   /* USER CODE BEGIN 2 */
 
   CAN_Filter_Config();
@@ -204,15 +262,24 @@ int main(void)
 
   /* USER CODE END 2 */
 
-  osKernelInitialize();
-
+  /* Init scheduler */
+  osKernelInitialize();  /* Call init function for freertos objects (in cmsis_os2.c) */
   MX_FREERTOS_Init();
 
+  /* Start scheduler */
   osKernelStart();
 
+  /* We should never get here as control is now taken by the scheduler */
+
+  /* Infinite loop */
+  /* USER CODE BEGIN WHILE */
   while (1)
   {
+    /* USER CODE END WHILE */
+
+    /* USER CODE BEGIN 3 */
   }
+  /* USER CODE END 3 */
 }
 
 /**
@@ -224,9 +291,14 @@ void SystemClock_Config(void)
   RCC_OscInitTypeDef RCC_OscInitStruct = {0};
   RCC_ClkInitTypeDef RCC_ClkInitStruct = {0};
 
+  /** Configure the main internal regulator output voltage
+  */
   __HAL_RCC_PWR_CLK_ENABLE();
   __HAL_PWR_VOLTAGESCALING_CONFIG(PWR_REGULATOR_VOLTAGE_SCALE1);
 
+  /** Initializes the RCC Oscillators according to the specified parameters
+  * in the RCC_OscInitTypeDef structure.
+  */
   RCC_OscInitStruct.OscillatorType = RCC_OSCILLATORTYPE_HSI;
   RCC_OscInitStruct.HSIState = RCC_HSI_ON;
   RCC_OscInitStruct.HSICalibrationValue = RCC_HSICALIBRATION_DEFAULT;
@@ -237,20 +309,22 @@ void SystemClock_Config(void)
   RCC_OscInitStruct.PLL.PLLP = RCC_PLLP_DIV2;
   RCC_OscInitStruct.PLL.PLLQ = 2;
   RCC_OscInitStruct.PLL.PLLR = 2;
-
   if (HAL_RCC_OscConfig(&RCC_OscInitStruct) != HAL_OK)
   {
     Error_Handler();
   }
 
+  /** Activate the Over-Drive mode
+  */
   if (HAL_PWREx_EnableOverDrive() != HAL_OK)
   {
     Error_Handler();
   }
 
-  RCC_ClkInitStruct.ClockType = RCC_CLOCKTYPE_HCLK | RCC_CLOCKTYPE_SYSCLK
-                              | RCC_CLOCKTYPE_PCLK1 | RCC_CLOCKTYPE_PCLK2;
-
+  /** Initializes the CPU, AHB and APB buses clocks
+  */
+  RCC_ClkInitStruct.ClockType = RCC_CLOCKTYPE_HCLK|RCC_CLOCKTYPE_SYSCLK
+                              |RCC_CLOCKTYPE_PCLK1|RCC_CLOCKTYPE_PCLK2;
   RCC_ClkInitStruct.SYSCLKSource = RCC_SYSCLKSOURCE_PLLCLK;
   RCC_ClkInitStruct.AHBCLKDivider = RCC_SYSCLK_DIV1;
   RCC_ClkInitStruct.APB1CLKDivider = RCC_HCLK_DIV4;
@@ -266,6 +340,10 @@ void SystemClock_Config(void)
 
 /* USER CODE END 4 */
 
+/**
+  * @brief  This function is executed in case of error occurrence.
+  * @retval None
+  */
 void Error_Handler(void)
 {
   /* USER CODE BEGIN Error_Handler_Debug */
@@ -278,8 +356,14 @@ void Error_Handler(void)
 
   /* USER CODE END Error_Handler_Debug */
 }
-
 #ifdef USE_FULL_ASSERT
+/**
+  * @brief  Reports the name of the source file and the source line number
+  *         where the assert_param error has occurred.
+  * @param  file: pointer to the source file name
+  * @param  line: assert_param error line source number
+  * @retval None
+  */
 void assert_failed(uint8_t *file, uint32_t line)
 {
   /* USER CODE BEGIN 6 */
