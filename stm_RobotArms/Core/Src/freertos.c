@@ -22,7 +22,7 @@
 #include "task.h"
 #include "main.h"
 #include "cmsis_os.h"
-
+#include "math.h"
 /* Private includes ----------------------------------------------------------*/
 /* USER CODE BEGIN Includes */
 #include "tim.h"
@@ -55,7 +55,7 @@ const osThreadAttr_t defaultTask_attributes = { .name = "defaultTask",
 /* Definitions for motorTask */
 osThreadId_t motorTaskHandle;
 const osThreadAttr_t motorTask_attributes = { .name = "motorTask", .stack_size =
-		128 * 4, .priority = (osPriority_t) osPriorityNormal, };
+		256 * 4, .priority = (osPriority_t) osPriorityNormal, };
 /* Definitions for canSemaphore */
 osSemaphoreId_t canSemaphoreHandle;
 const osSemaphoreAttr_t canSemaphore_attributes = { .name = "canSemaphore" };
@@ -130,7 +130,11 @@ void StartDefaultTask(void *argument) {
 	/* USER CODE BEGIN StartDefaultTask */
 	/* Infinite loop */
 	for (;;) {
-		osDelay(1);
+		if (HAL_GPIO_ReadPin(B1_GPIO_Port, B1_Pin) == GPIO_PIN_RESET) {
+			osSemaphoreRelease(canSemaphoreHandle);
+			osDelay(500);
+		}
+		osDelay(10);
 	}
 	/* USER CODE END StartDefaultTask */
 }
@@ -159,7 +163,7 @@ void motorTask01(void *argument) {
 	/* 시작 자세: 팔 90도, 그리퍼 열림 */
 	Servo_SetAngle(TIM_CHANNEL_1, ARM_90);
 	Servo_SetAngle(TIM_CHANNEL_2, GRIP_OPEN);
-	osDelay(500);
+	osDelay(1000);
 
 	for (;;) {
 
@@ -169,10 +173,33 @@ void motorTask01(void *argument) {
 			osDelay(100);
 			HAL_GPIO_WritePin(LD2_GPIO_Port, LD2_Pin, GPIO_PIN_RESET);
 			osDelay(100);
+			float pos1 = ARM_90;
+			/* 1. 팔 180도로 이동 1초로 고정*/
+			/* 1. 팔 180도로 이동 - PD 제어 */
+			{
+				float target = ARM_180;
+				float pos = ARM_90;     // 현재 위치(시작점)
+				float Kp = 0.1f;          // 비례 게인
+				float Kd = 0.05f;          // 미분 게인
+				float prev_error = target - pos;
 
-			/* 1. 팔 0도로 이동 */
-			Servo_SetAngle(TIM_CHANNEL_1, ARM_0);
-			osDelay(600);                 // 이동 완료까지 대기
+				for (;;) {
+					float error = target - pos;
+					float derivative = error - prev_error; // dt 일정(20ms)이라 차분으로 충분
+					prev_error = error;
+
+					if (error < 1.0f)
+						break;                 // 충분히 도착하면 종료
+
+					pos += Kp * error + Kd * derivative;     // PD 출력만큼 이동
+
+					if (pos > ARM_180)
+						pos = ARM_180;        // 오버슈트 클램프
+					Servo_SetAngle(TIM_CHANNEL_1, (uint16_t) pos);
+					osDelay(20);
+				}
+				Servo_SetAngle(TIM_CHANNEL_1, ARM_180);      // 끝값 정확히 보정
+			}               // 이동 완료까지 대기
 
 			/* 2. 그리퍼 닫기 (잡기) */
 			Servo_SetAngle(TIM_CHANNEL_2, GRIP_CLOSE);
@@ -180,9 +207,15 @@ void motorTask01(void *argument) {
 			CAN_Send(0x124, 0x01);   // 1번 벨트 작동 신호
 			CAN_Send(0x126, 0x01);   // 1번 벨트 작동 신호
 
-			/* 3. 팔 180도로 이동 */
-			Servo_SetAngle(TIM_CHANNEL_1, ARM_180);
-			osDelay(800);                 // 0→180은 멀어서 좀 더 대기
+			/* 3. 팔 0도로 이동 */
+
+			for (float pos = ARM_180; pos >= ARM_0; pos = pos / 1.035) {
+				if (pos <= 1) {
+					pos = 0;
+				}
+				Servo_SetAngle(TIM_CHANNEL_1, (uint16_t) pos);
+				osDelay(20);
+			}
 
 			/* 4. 그리퍼 열기 (놓기) */
 			Servo_SetAngle(TIM_CHANNEL_2, GRIP_OPEN);
