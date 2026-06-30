@@ -67,7 +67,7 @@ typedef enum
  * 2000us      = 한쪽 방향 회전
  * 1000us      = 반대 방향 회전
  */
-#define CONVEYOR_SERVO_STOP_US      1500
+#define CONVEYOR_SERVO_STOP_US      1520
 #define CONVEYOR_SERVO_RUN_US       1900
 
 /*
@@ -573,7 +573,9 @@ void Conveyor_SetServoPulse(uint16_t pulse_us)
  */
 void Conveyor_Run(void)
 {
-  Conveyor_SetServoPulse(CONVEYOR_SERVO_RUN_US);
+	  Conveyor_SetServoPulse(CONVEYOR_SERVO_RUN_US);
+	  HAL_TIM_PWM_Start(&htim2, TIM_CHANNEL_1);
+  //Conveyor_SetServoPulse(CONVEYOR_SERVO_RUN_US);
 }
 
 /*
@@ -584,7 +586,9 @@ void Conveyor_Run(void)
  */
 void Conveyor_Stop(void)
 {
-  Conveyor_SetServoPulse(CONVEYOR_SERVO_STOP_US);
+	HAL_TIM_PWM_Stop(&htim2, TIM_CHANNEL_1);
+	HAL_GPIO_WritePin(GPIOA, GPIO_PIN_0, GPIO_PIN_RESET);
+  //Conveyor_SetServoPulse(CONVEYOR_SERVO_STOP_US);
 }
 
 /*

@@ -44,40 +44,72 @@ typedef enum
 /* USER CODE BEGIN PD */
 
 /*
- * 360도 연속회전 서보모터 설정
+ * 기존 컨베이어 서보모터 설정
  *
- * TIM3_CH1 PWM 사용
- * 예시 핀: PA6 = TIM3_CH1
+ * 연결:
+ * PA0 = TIM2_CH1 = Servo Signal
+ *
+ * CubeMX TIM2 설정:
+ * Prescaler      = 89
+ * Counter Period = 19999
+ * Pulse          = 1500
+ *
+ * 현재 APB1 Timer Clock = 90MHz 기준:
+ * 90MHz / (89 + 1) = 1MHz
+ * 1 tick = 1us
+ *
+ * Counter Period = 19999
+ * 20000us = 20ms
+ * PWM 주파수 = 50Hz
+ *
+ * 개조한 180도 서보를 연속회전 서보처럼 사용하는 방식:
+ * 1500us 근처 = 정지
+ * 2000us      = 한쪽 방향 회전
+ * 1000us      = 반대 방향 회전
+ */
+#define CONVEYOR_SERVO_STOP_US      1500
+#define CONVEYOR_SERVO_RUN_US       1900
+
+/*
+ * 모터A 45도 회전 설정
+ *
+ * 연결:
+ * PA8  = IN1
+ * PB10 = IN2
+ * PB4  = IN3
+ * PB5  = IN4
+ *
+ * 28BYJ-48 기준 대략값:
+ * 4096 step = 360도
+ * 512 step  = 45도
+ * 1024 step = 90도
+ */
+#define MOTOR_A_45DEG_STEPS         512
+#define MOTOR_A_STEP_DELAY_MS       1
+#define MOTOR_A_HOLD_TIME_MS        2000
+
+/*
+ * 모터B DC모터 설정
+ *
+ * 연결:
+ * PA6 = TIM3_CH1 = PWM
+ * PA7 = IN1
+ * PB6 = IN2
  *
  * CubeMX TIM3 설정:
- * Prescaler = 89
- * Counter Period = 19999
- * Pulse = 1500
+ * Prescaler      = 89
+ * Counter Period = 999
  *
- * 이 설정이면 1카운트 = 1us, 주기 = 20ms, PWM = 50Hz
- */
-#define SERVO_STOP_US              1500
-#define SERVO_CW_US                2000
-#define SERVO_CCW_US               1000
-
-/*
- * 모터A 90도 회전 설정
+ * TIM3도 APB1 Timer이고 현재 APB1 Timer Clock = 90MHz.
+ * 90MHz / (89 + 1) = 1MHz
+ * 1MHz / (999 + 1) = 1kHz
  *
- * PA8, PB10, PB4, PB5에 연결된 스텝모터이다.
+ * PWM 값 범위:
+ * 0 ~ 999
  */
-#define MOTOR_A_90DEG_STEPS        1024
-#define MOTOR_A_STEP_DELAY_MS      1
-#define MOTOR_A_HOLD_TIME_MS       2000
-
-/*
- * 추가 모터B 속도
- */
-#define MOTOR_B_STEP_DELAY_MS      3
-
-/*
- * RxData[0] = 0x01 상황에서 송신할 CAN ID
- */
-#define CAN_RESPONSE_ID            0x126
+#define MOTOR_B_PWM_STOP            0
+#define MOTOR_B_PWM_RUN             700
+#define MOTOR_B_RUN_TIME_MS         3000
 
 /* USER CODE END PD */
 
@@ -97,9 +129,8 @@ extern volatile uint8_t g_conveyor_Stop;
 extern volatile uint8_t g_motorA_Command;
 extern volatile uint8_t g_motorA_Busy;
 
-extern volatile uint8_t g_motorB_Run;
-
-extern volatile uint8_t g_send_126_Request;
+extern volatile uint8_t g_motorB_Command;
+extern volatile uint8_t g_motorB_Busy;
 
 /* USER CODE END Variables */
 
@@ -171,35 +202,25 @@ const osTimerAttr_t CheckTimer_attributes = {
 /* USER CODE BEGIN FunctionPrototypes */
 
 /*
- * 360도 서보모터 함수
+ * 기존 컨베이어 서보모터 함수
  */
-void Servo_SetPulse(uint16_t pulse_us);
-void Servo_Stop(void);
-void Servo_RotateCW(void);
-void Servo_RotateCCW(void);
+void Conveyor_SetServoPulse(uint16_t pulse_us);
+void Conveyor_Run(void);
+void Conveyor_Stop(void);
 
 /*
- * 모터A
- *
- * PA8  → IN1
- * PB10 → IN2
- * PB4  → IN3
- * PB5  → IN4
+ * 모터A 스텝모터 함수
  */
 void MotorA_Write(uint8_t in1, uint8_t in2, uint8_t in3, uint8_t in4);
 void MotorA_Step(uint8_t stepIndex);
 void MotorA_RotateSteps(uint16_t steps, MotorDirection direction, uint32_t delayMs);
 
 /*
- * 추가 모터B
- *
- * PA7 → IN1
- * PB6 → IN2
- * PC7 → IN3
- * PA9 → IN4
+ * 모터B DC모터 함수
  */
-void MotorB_Write(uint8_t in1, uint8_t in2, uint8_t in3, uint8_t in4);
-void MotorB_OneCycle(void);
+void MotorB_SetPWM(uint16_t pwm);
+void MotorB_DC_Start(void);
+void MotorB_DC_Stop(void);
 
 /* USER CODE END FunctionPrototypes */
 
@@ -219,7 +240,8 @@ void MX_FREERTOS_Init(void);
   * @param  None
   * @retval None
   */
-void MX_FREERTOS_Init(void) {
+void MX_FREERTOS_Init(void)
+{
   /* USER CODE BEGIN Init */
 
   /* USER CODE END Init */
@@ -281,40 +303,14 @@ void StartDefaultTask(void *argument)
 {
   /* USER CODE BEGIN StartDefaultTask */
 
-  CAN_TxHeaderTypeDef TxHeader;
-  uint8_t TxData[8] = {0};
-  uint32_t TxMailbox;
-
   /*
-   * RxData[0] = 0x01 상황에서 송신할 CAN 메시지 설정
-   *
-   * 송신 ID: 0x126
-   * 데이터 길이: 0바이트
+   * 현재 defaultTask는 특별한 동작 없이 유지한다.
+   * 기존에 있던 CAN ID 0x126 송신 코드는 제거된 상태이다.
    */
-  TxHeader.StdId = CAN_RESPONSE_ID;
-  TxHeader.IDE = CAN_ID_STD;
-  TxHeader.RTR = CAN_RTR_DATA;
-  TxHeader.DLC = 0;
-  TxHeader.TransmitGlobalTime = DISABLE;
 
   for (;;)
   {
-    if (g_send_126_Request == 1)
-    {
-      g_send_126_Request = 0;
-
-      if (HAL_CAN_GetTxMailboxesFreeLevel(&hcan1) > 0)
-      {
-        if (HAL_CAN_AddTxMessage(&hcan1, &TxHeader, TxData, &TxMailbox) != HAL_OK)
-        {
-          /*
-           * 송신 실패 시 여기서는 멈추지 않음
-           */
-        }
-      }
-    }
-
-    osDelay(1);
+    osDelay(1000);
   }
 
   /* USER CODE END StartDefaultTask */
@@ -332,47 +328,55 @@ void StartTask02(void *argument)
   /* USER CODE BEGIN StartTask02 */
 
   /*
-   * Task02에서 360도 연속회전 서보모터를 계속 회전시킨다.
+   * 기존 컨베이어 서보모터 담당 Task
    *
-   * 사용 타이머:
-   * TIM3_CH1
+   * 연결:
+   * PA0 = TIM2_CH1 = Servo Signal
    *
-   * 예시 핀:
-   * PA6 = TIM3_CH1
-   *
-   * 동작:
-   * 보드에 전원이 들어오고 FreeRTOS가 시작되면
-   * 이 Task에서 PWM을 시작하고,
-   * 2000us 펄스를 계속 출력한다.
-   *
-   * 360도 서보 기준:
-   * 1500us = 정지
-   * 2000us = 한쪽 방향 계속 회전
-   * 1000us = 반대 방향 계속 회전
+   * 요구사항:
+   * 1. 보드 시작 시 기존 서보모터는 계속 회전
+   * 2. CAN ID 0x124, Data[0] = 0xAA 수신 시 계속 정지
+   * 3. CAN ID 0x124, Data[0] = 0x01 수신 시 다시 회전
    */
 
-  HAL_TIM_PWM_Start(&htim3, TIM_CHANNEL_1);
+  uint8_t lastStopState = 255;
 
   /*
-   * 처음에는 안전하게 정지 신호를 짧게 준다.
+   * 기존 서보모터 PWM 시작
    */
-  Servo_Stop();
+  HAL_TIM_PWM_Start(&htim2, TIM_CHANNEL_1);
+
+  Conveyor_Stop();
   osDelay(500);
 
   /*
-   * 한쪽 방향으로 계속 회전
+   * 보드 시작 시 기존 서보모터는 계속 회전
    */
-  Servo_RotateCW();
+  g_conveyor_Stop = 0;
+  Conveyor_Run();
+  lastStopState = 0;
 
   for (;;)
   {
     /*
-     * PWM은 하드웨어 타이머가 계속 출력하므로,
-     * 반복문에서 계속 SetCompare를 호출할 필요는 없다.
-     *
-     * Task가 살아있도록 delay만 둔다.
+     * 이전 상태와 현재 상태가 달라졌을 때만
+     * Run/Stop 처리를 한다.
      */
-    osDelay(1000);
+    if (g_conveyor_Stop != lastStopState)
+    {
+      lastStopState = g_conveyor_Stop;
+
+      if (g_conveyor_Stop == 1)
+      {
+        Conveyor_Stop();
+      }
+      else
+      {
+        Conveyor_Run();
+      }
+    }
+
+    osDelay(10);
   }
 
   /* USER CODE END StartTask02 */
@@ -389,9 +393,13 @@ void StartTask03(void *argument)
 {
   /* USER CODE BEGIN StartTask03 */
 
+  /*
+   * 현재 EventTask는 사용하지 않는다.
+   */
+
   for (;;)
   {
-    osDelay(1);
+    osDelay(1000);
   }
 
   /* USER CODE END StartTask03 */
@@ -409,27 +417,41 @@ void StartTask04(void *argument)
   /* USER CODE BEGIN StartTask04 */
 
   /*
-   * 추가 모터B 담당 Task
+   * 모터B DC모터 담당 Task
    *
-   * PA7, PB6, PC7, PA9에 연결된 스텝모터 제어.
+   * 연결:
+   * PA6 = TIM3_CH1 = PWM
+   * PA7 = IN1
+   * PB6 = IN2
    *
-   * RxData[0] = 0x02 수신 시:
-   * 계속 회전 시작
+   * CAN ID 0x124, Data[0] = 0x02 수신 시:
+   * 모터B가 5초 동안 회전 후 정지한다.
    */
 
-  MotorB_Write(0, 0, 0, 0);
+  /*
+   * 모터B PWM 시작
+   */
+  HAL_TIM_PWM_Start(&htim3, TIM_CHANNEL_1);
+
+  MotorB_DC_Stop();
 
   for (;;)
   {
-    if (g_motorB_Run == 1)
+    if (g_motorB_Command == 1)
     {
-      MotorB_OneCycle();
+      g_motorB_Command = 0;
+      g_motorB_Busy = 1;
+
+      MotorB_DC_Start();
+
+      osDelay(MOTOR_B_RUN_TIME_MS);
+
+      MotorB_DC_Stop();
+
+      g_motorB_Busy = 0;
     }
-    else
-    {
-      MotorB_Write(0, 0, 0, 0);
-      osDelay(10);
-    }
+
+    osDelay(10);
   }
 
   /* USER CODE END StartTask04 */
@@ -439,7 +461,6 @@ void StartTask04(void *argument)
 /**
   * @brief  Function implementing the MotorCTask thread.
   * @param  argument: Not used
-  * @retval None
   */
 /* USER CODE END Header_StartTask05 */
 void StartTask05(void *argument)
@@ -447,14 +468,18 @@ void StartTask05(void *argument)
   /* USER CODE BEGIN StartTask05 */
 
   /*
-   * 모터A 담당 Task
+   * 모터A 스텝모터 담당 Task
    *
-   * PA8, PB10, PB4, PB5에 연결된 스텝모터 제어.
+   * 연결:
+   * PA8  = IN1
+   * PB10 = IN2
+   * PB4  = IN3
+   * PB5  = IN4
    *
    * CAN ID 0x124, Data[0] = 0xAC 수신 시:
-   * 1. 90도 정방향 회전
+   * 1. 정방향 회전
    * 2. 2초 정지
-   * 3. 90도 역방향 회전해서 원위치 복귀
+   * 3. 역방향 회전해서 원위치 복귀
    */
 
   MotorA_Write(0, 0, 0, 0);
@@ -466,11 +491,11 @@ void StartTask05(void *argument)
       g_motorA_Command = 0;
       g_motorA_Busy = 1;
 
-      MotorA_RotateSteps(MOTOR_A_90DEG_STEPS, MOTOR_DIR_FORWARD, MOTOR_A_STEP_DELAY_MS);
+      MotorA_RotateSteps(MOTOR_A_45DEG_STEPS, MOTOR_DIR_FORWARD, MOTOR_A_STEP_DELAY_MS);
 
       osDelay(MOTOR_A_HOLD_TIME_MS);
 
-      MotorA_RotateSteps(MOTOR_A_90DEG_STEPS, MOTOR_DIR_BACKWARD, MOTOR_A_STEP_DELAY_MS);
+      MotorA_RotateSteps(MOTOR_A_45DEG_STEPS, MOTOR_DIR_BACKWARD, MOTOR_A_STEP_DELAY_MS);
 
       MotorA_Write(0, 0, 0, 0);
 
@@ -511,62 +536,65 @@ void CheckTimerCallback(void *argument)
 /* USER CODE BEGIN Application */
 
 /*
- * 360도 서보모터 PWM 펄스 설정
+ * 기존 컨베이어 서보모터 PWM 펄스 설정
  *
- * TIM3_CH1 사용
+ * 연결:
+ * PA0 = TIM2_CH1 = Servo Signal
  *
- * pulse_us 값:
- * 1500 = 정지
- * 2000 = 한쪽 방향 회전
- * 1000 = 반대 방향 회전
+ * TIM2 설정:
+ * Prescaler      = 89
+ * Counter Period = 19999
+ *
+ * 따라서 CCR 값 1500은 1500us, 즉 1.5ms 펄스를 의미한다.
  */
-void Servo_SetPulse(uint16_t pulse_us)
+void Conveyor_SetServoPulse(uint16_t pulse_us)
 {
-  if (pulse_us < 500)
+  /*
+   * 개조 서보/연속회전 서보는 보통 1000~2000us 범위에서 사용한다.
+   */
+  if (pulse_us < 1000)
   {
-    pulse_us = 500;
+    pulse_us = 1000;
   }
 
-  if (pulse_us > 2500)
+  if (pulse_us > 2000)
   {
-    pulse_us = 2500;
+    pulse_us = 2000;
   }
 
-  __HAL_TIM_SET_COMPARE(&htim3, TIM_CHANNEL_1, pulse_us);
+  __HAL_TIM_SET_COMPARE(&htim2, TIM_CHANNEL_1, pulse_us);
 }
 
 /*
- * 서보 정지
+ * 기존 컨베이어 서보모터 회전
+ *
+ * 개조한 180도 서보를 연속회전 서보처럼 사용하는 방식.
+ * 보통 1500보다 크면 한 방향으로 회전한다.
  */
-void Servo_Stop(void)
+void Conveyor_Run(void)
 {
-  Servo_SetPulse(SERVO_STOP_US);
+  Conveyor_SetServoPulse(CONVEYOR_SERVO_RUN_US);
 }
 
 /*
- * 서보 한쪽 방향 계속 회전
+ * 기존 컨베이어 서보모터 정지
+ *
+ * 보통 1500us 근처가 정지이다.
+ * 개조 상태에 따라 완전 정지값이 1500에서 조금 벗어날 수 있다.
  */
-void Servo_RotateCW(void)
+void Conveyor_Stop(void)
 {
-  Servo_SetPulse(SERVO_CW_US);
-}
-
-/*
- * 서보 반대 방향 계속 회전
- */
-void Servo_RotateCCW(void)
-{
-  Servo_SetPulse(SERVO_CCW_US);
+  Conveyor_SetServoPulse(CONVEYOR_SERVO_STOP_US);
 }
 
 /*
  * 모터A 출력
  *
- * 모터A 연결:
- * PA8  → IN1
- * PB10 → IN2
- * PB4  → IN3
- * PB5  → IN4
+ * 연결:
+ * PA8  = IN1
+ * PB10 = IN2
+ * PB4  = IN3
+ * PB5  = IN4
  */
 void MotorA_Write(uint8_t in1, uint8_t in2, uint8_t in3, uint8_t in4)
 {
@@ -647,52 +675,51 @@ void MotorA_RotateSteps(uint16_t steps, MotorDirection direction, uint32_t delay
 }
 
 /*
- * 추가 모터B 출력
+ * 모터B DC모터 PWM 설정
  *
- * 추가 모터B 연결:
- * PA7 → IN1
- * PB6 → IN2
- * PC7 → IN3
- * PA9 → IN4
+ * 연결:
+ * PA6 = TIM3_CH1 = PWM
+ * PA7 = IN1
+ * PB6 = IN2
  */
-void MotorB_Write(uint8_t in1, uint8_t in2, uint8_t in3, uint8_t in4)
+void MotorB_SetPWM(uint16_t pwm)
 {
-  HAL_GPIO_WritePin(GPIOA, GPIO_PIN_7, in1 ? GPIO_PIN_SET : GPIO_PIN_RESET);
-  HAL_GPIO_WritePin(GPIOB, GPIO_PIN_6, in2 ? GPIO_PIN_SET : GPIO_PIN_RESET);
-  HAL_GPIO_WritePin(GPIOC, GPIO_PIN_7, in3 ? GPIO_PIN_SET : GPIO_PIN_RESET);
-  HAL_GPIO_WritePin(GPIOA, GPIO_PIN_9, in4 ? GPIO_PIN_SET : GPIO_PIN_RESET);
+  if (pwm > 999)
+  {
+    pwm = 999;
+  }
+
+  __HAL_TIM_SET_COMPARE(&htim3, TIM_CHANNEL_1, pwm);
 }
 
 /*
- * 추가 모터B 1사이클 회전
+ * 모터B DC모터 시작
  *
- * 반스텝 8단계 구동.
+ * IN1 = 1
+ * IN2 = 0
+ * PWM = MOTOR_B_PWM_RUN
  */
-void MotorB_OneCycle(void)
+void MotorB_DC_Start(void)
 {
-  MotorB_Write(1, 0, 0, 0);
-  osDelay(MOTOR_B_STEP_DELAY_MS);
+  HAL_GPIO_WritePin(GPIOA, GPIO_PIN_7, GPIO_PIN_SET);
+  HAL_GPIO_WritePin(GPIOB, GPIO_PIN_6, GPIO_PIN_RESET);
 
-  MotorB_Write(1, 1, 0, 0);
-  osDelay(MOTOR_B_STEP_DELAY_MS);
+  MotorB_SetPWM(MOTOR_B_PWM_RUN);
+}
 
-  MotorB_Write(0, 1, 0, 0);
-  osDelay(MOTOR_B_STEP_DELAY_MS);
+/*
+ * 모터B DC모터 정지
+ *
+ * IN1 = 0
+ * IN2 = 0
+ * PWM = 0
+ */
+void MotorB_DC_Stop(void)
+{
+  MotorB_SetPWM(MOTOR_B_PWM_STOP);
 
-  MotorB_Write(0, 1, 1, 0);
-  osDelay(MOTOR_B_STEP_DELAY_MS);
-
-  MotorB_Write(0, 0, 1, 0);
-  osDelay(MOTOR_B_STEP_DELAY_MS);
-
-  MotorB_Write(0, 0, 1, 1);
-  osDelay(MOTOR_B_STEP_DELAY_MS);
-
-  MotorB_Write(0, 0, 0, 1);
-  osDelay(MOTOR_B_STEP_DELAY_MS);
-
-  MotorB_Write(1, 0, 0, 1);
-  osDelay(MOTOR_B_STEP_DELAY_MS);
+  HAL_GPIO_WritePin(GPIOA, GPIO_PIN_7, GPIO_PIN_RESET);
+  HAL_GPIO_WritePin(GPIOB, GPIO_PIN_6, GPIO_PIN_RESET);
 }
 
 /* USER CODE END Application */
