@@ -76,9 +76,12 @@ void vision_thread_func()
     }
     cap.set(CAP_PROP_FRAME_WIDTH, 640);
     cap.set(CAP_PROP_FRAME_HEIGHT, 480);
-
+    cap.set(CAP_PROP_AUTO_EXPOSURE, 0.25); // 수동 노출 모드
+    cap.set(CAP_PROP_EXPOSURE, -5);
     ImageScanner scanner;
     scanner.set_config(ZBAR_NONE, ZBAR_CFG_ENABLE, 1);
+    scanner.set_config(ZBAR_NONE, ZBAR_CFG_X_DENSITY, 1);
+    scanner.set_config(ZBAR_NONE, ZBAR_CFG_Y_DENSITY, 1);
 
     Mat local_frame, gray;
 
@@ -121,20 +124,21 @@ void vision_thread_func()
                 {
                     if (data == "stop")
                     {
-                        if (is_belt_run)
-                        {
-                            cout << "belt_stop" << endl;
-                            char cmd = 'S';
-                            write(uart_fd, &cmd, 1);
-                            is_belt_run = false;
-                        }
-
                         if (!arm_is_run)
                         {
                             cout << "arm_run" << endl;
                             char cmd = 'A';
                             write(uart_fd, &cmd, 1);
                             arm_is_run = true;
+                            usleep(100000);
+                        }
+                        if (is_belt_run)
+                        {
+                            cout << "belt_stop" << endl;
+                            char cmd = 'S';
+                            write(uart_fd, &cmd, 1);
+                            is_belt_run = false;
+                            usleep(100000);
                         }
                     }
                     else if (data == "trash")
